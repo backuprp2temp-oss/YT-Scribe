@@ -18,12 +18,28 @@ const USER_AGENT =
 const INNERTUBE_API_KEY = 'AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w';
 
 const INNERTUBE_API_URL = 'https://www.youtube.com/youtubei/v1/player?key=' + INNERTUBE_API_KEY;
-const INNERTUBE_CONTEXT = {
-    client: {
+
+// Multiple client contexts to try in order (fallback if one gets blocked)
+const CLIENT_CONTEXTS = [
+    {
+        clientName: 'WEB',
+        clientVersion: '2.20260409.00.00',
+    },
+    {
         clientName: 'ANDROID',
         clientVersion: '20.10.38',
     },
-};
+    {
+        clientName: 'TVHTML5_SIMPLEX',
+        clientVersion: '1.0',
+    },
+];
+
+// YouTube consent cookie required for some regions
+const CONSENT_COOKIE = 'CONSENT=PENDING+987; SOCS=CAISEwgDEgk2MTkxMjkyNjEaAmVuIAEaBgiA_LyaBg';
+
+// Cached visitor data (helps avoid bot detection)
+let cachedVisitorData = null;
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -45,26 +61,91 @@ function extractVideoId(input) {
     return fb ? fb[1] : null;
 }
 
-/** Call innertube player API to get captions data */
+/** Call innertube player API with fallback client contexts */
 async function fetchInnertubeData(videoId) {
-    const res = await undiciFetch(INNERTUBE_API_URL, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'User-Agent': USER_AGENT,
-        },
-        body: JSON.stringify({
-            context: INNERTUBE_CONTEXT,
-            videoId: videoId,
-        }),
-        signal: AbortSignal.timeout(15000),
-    });
+    const errors = [];
 
-    if (!res.ok) {
-        throw { code: 'SERVER_ERROR', message: `YouTube API returned status ${res.status}.` };
+    // Try each client context in order
+    for (const context of CLIENT_CONTEXTS) {
+        try {
+            const body = {
+                context: { client: context },
+                videoId: videoId,
+            };
+
+            // Add visitor data if we have it (helps avoid bot detection)
+            if (cachedVisitorData) {
+                body.serviceIntegrityContext = {
+                    visitorData: cachedVisitorData,
+                };
+            }
+
+            const res = await undiciFetch(INNERTUBE_API_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'User-Agent': USER_AGENT,
+                    'Cookie': CONSENT_COOKIE,
+                    'Accept-Language': 'en-US,en;q=0.9',
+                },
+                body: JSON.stringify(body),
+                signal: AbortSignal.timeout(15000),
+            });
+
+            if (!res.ok) {
+                errors.push(`${context.clientName}: HTTP ${res.status}`);
+                continue;
+            }
+
+            const data = await res.json();
+
+            // Cache visitor data for future requests
+            if (data.responseContext?.visitorData) {
+                cachedVisitorData = data.responseContext.visitorData;
+            }
+
+            // Check for bot detection or authentication errors
+            const playabilityStatus = data.playabilityStatus;
+            if (playabilityStatus) {
+                const reason = playabilityStatus.reason || '';
+                const status = playabilityStatus.status;
+
+                // Detect bot detection messages
+                if (reason.toLowerCase().includes('bot') ||
+                    reason.toLowerCase().includes('sign in') ||
+                    reason.toLowerCase().includes('verify') ||
+                    status === 'LOGIN_REQUIRED') {
+                    errors.push(`${context.clientName}: ${reason}`);
+                    continue;
+                }
+
+                // Video is actually unavailable (don't try other contexts)
+                if (status === 'ERROR' && !reason.toLowerCase().includes('bot')) {
+                    return data;
+                }
+            }
+
+            // Check if captions exist
+            const hasCaptions = data.captions?.playerCaptionsTracklistRenderer?.captionTracks?.length > 0;
+            if (!hasCaptions && errors.length < CLIENT_CONTEXTS.length - 1) {
+                errors.push(`${context.clientName}: No captions found`);
+                continue;
+            }
+
+            // Success!
+            return data;
+        } catch (err) {
+            errors.push(`${context.clientName}: ${err.message || 'Unknown error'}`);
+            continue;
+        }
     }
 
-    return res.json();
+    // All contexts failed
+    console.error('All client contexts failed:', errors);
+    throw {
+        code: 'SERVER_ERROR',
+        message: `YouTube rejected all client contexts: ${errors.join('; ')}`,
+    };
 }
 
 /** Extract caption tracks from innertube player response */
@@ -94,10 +175,32 @@ async function fetchTranscriptXML(baseUrl) {
     // Remove &fmt=srv3 if present (Python library does this)
     const url = baseUrl.replace('&fmt=srv3', '');
     const res = await undiciFetch(url, {
-        headers: { 'User-Agent': USER_AGENT },
+        headers: {
+            'User-Agent': USER_AGENT,
+            'Cookie': CONSENT_COOKIE,
+        },
         signal: AbortSignal.timeout(10000),
     });
-    return res.text();
+
+    if (!res.ok) {
+        throw {
+            code: 'NO_TRANSCRIPT',
+            message: `Failed to fetch transcript XML (HTTP ${res.status})`,
+        };
+    }
+
+    const text = await res.text();
+
+    // Check for bot detection in XML response
+    if (text.toLowerCase().includes('sign in') || text.toLowerCase().includes('bot')) {
+        console.error('Bot detected in transcript XML response');
+        throw {
+            code: 'NO_TRANSCRIPT',
+            message: 'YouTube requires sign-in for this transcript',
+        };
+    }
+
+    return text;
 }
 
 function decodeEntities(str) {
@@ -226,6 +329,7 @@ app.get('/api/transcript', async (req, res) => {
         });
     } catch (err) {
         console.error('Transcript error:', err.message || err);
+        console.error('Full error object:', JSON.stringify(err, null, 2));
         const status =
             err.code === 'RATE_LIMITED' ? 429
                 : err.code === 'VIDEO_UNAVAILABLE' ? 404
