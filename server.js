@@ -15,8 +15,6 @@ app.use(express.static(path.join(__dirname, 'public')));
 const USER_AGENT =
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-const CONSENT_COOKIE = 'SOCS=CAESEwgDEgk2MTkxMjkyNjEaAmVuIAEaBgiA_LyaBg; CONSENT=PENDING+987';
-const WATCH_URL = 'https://www.youtube.com/watch?v=';
 const INNERTUBE_API_URL = 'https://www.youtube.com/youtubei/v1/player?key=';
 const INNERTUBE_CONTEXT = {
     client: {
@@ -24,6 +22,7 @@ const INNERTUBE_CONTEXT = {
         clientVersion: '20.10.38',
     },
 };
+let innertubeApiKeyPromise = null;
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -45,28 +44,36 @@ function extractVideoId(input) {
     return fb ? fb[1] : null;
 }
 
-/** Fetch page HTML and extract innertube API key */
-async function fetchInnertubeApiKey(videoId) {
-    const res = await undiciFetch(WATCH_URL + videoId, {
-        headers: {
-            'User-Agent': USER_AGENT,
-            'Accept-Language': 'en-US,en;q=0.9',
-            Cookie: CONSENT_COOKIE,
-        },
-        signal: AbortSignal.timeout(15000),
-    });
-    const html = await res.text();
+/** Get a reusable InnerTube API key without scraping the public watch page */
+async function fetchInnertubeApiKey() {
+    if (!innertubeApiKeyPromise) {
+        innertubeApiKeyPromise = (async () => {
+            const { Innertube } = await import('youtubei.js');
+            const youtube = await Innertube.create({
+                retrieve_player: false,
+                retrieve_innertube_config: false,
+            });
 
-    if (html.includes('class="g-recaptcha"')) {
-        throw { code: 'RATE_LIMITED', message: 'YouTube rate limit reached. Please try again later.' };
+            if (!youtube?.session?.api_key) {
+                throw new Error('youtubei.js session did not expose an API key.');
+            }
+
+            return youtube.session.api_key;
+        })().catch((err) => {
+            innertubeApiKeyPromise = null;
+            throw err;
+        });
     }
 
-    const keyMatch = html.match(/"INNERTUBE_API_KEY"\s*:\s*"([a-zA-Z0-9_-]+)"/);
-    if (!keyMatch) {
-        throw { code: 'VIDEO_UNAVAILABLE', message: 'Could not extract API key. The video may be unavailable.' };
+    try {
+        return await innertubeApiKeyPromise;
+    } catch (err) {
+        console.error('Failed to initialize youtubei.js session:', err.message || err);
+        throw {
+            code: 'SERVER_ERROR',
+            message: 'Could not initialize the YouTube API session. Please try again in a moment.',
+        };
     }
-
-    return keyMatch[1];
 }
 
 /** Call innertube player API to get captions data */
@@ -201,7 +208,7 @@ app.get('/api/transcript', async (req, res) => {
         const requestedLang = req.query.lang || '';
 
         // Step 1: Get API key from YouTube page
-        const apiKey = await fetchInnertubeApiKey(videoId);
+        const apiKey = await fetchInnertubeApiKey();
 
         // Step 2: Call innertube player API (ANDROID client)
         const innertubeData = await fetchInnertubeData(videoId, apiKey);
