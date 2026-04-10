@@ -15,14 +15,15 @@ app.use(express.static(path.join(__dirname, 'public')));
 const USER_AGENT =
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-const INNERTUBE_API_URL = 'https://www.youtube.com/youtubei/v1/player?key=';
+const INNERTUBE_API_KEY = 'AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w';
+
+const INNERTUBE_API_URL = 'https://www.youtube.com/youtubei/v1/player?key=' + INNERTUBE_API_KEY;
 const INNERTUBE_CONTEXT = {
     client: {
         clientName: 'ANDROID',
         clientVersion: '20.10.38',
     },
 };
-let innertubeApiKeyPromise = null;
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -44,41 +45,9 @@ function extractVideoId(input) {
     return fb ? fb[1] : null;
 }
 
-/** Get a reusable InnerTube API key without scraping the public watch page */
-async function fetchInnertubeApiKey() {
-    if (!innertubeApiKeyPromise) {
-        innertubeApiKeyPromise = (async () => {
-            const { Innertube } = await import('youtubei.js');
-            const youtube = await Innertube.create({
-                retrieve_player: false,
-                retrieve_innertube_config: false,
-            });
-
-            if (!youtube?.session?.api_key) {
-                throw new Error('youtubei.js session did not expose an API key.');
-            }
-
-            return youtube.session.api_key;
-        })().catch((err) => {
-            innertubeApiKeyPromise = null;
-            throw err;
-        });
-    }
-
-    try {
-        return await innertubeApiKeyPromise;
-    } catch (err) {
-        console.error('Failed to initialize youtubei.js session:', err.message || err);
-        throw {
-            code: 'SERVER_ERROR',
-            message: 'Could not initialize the YouTube API session. Please try again in a moment.',
-        };
-    }
-}
-
 /** Call innertube player API to get captions data */
-async function fetchInnertubeData(videoId, apiKey) {
-    const res = await undiciFetch(INNERTUBE_API_URL + apiKey, {
+async function fetchInnertubeData(videoId) {
+    const res = await undiciFetch(INNERTUBE_API_URL, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -207,16 +176,13 @@ app.get('/api/transcript', async (req, res) => {
 
         const requestedLang = req.query.lang || '';
 
-        // Step 1: Get API key from YouTube page
-        const apiKey = await fetchInnertubeApiKey();
+        // Step 1: Call innertube player API (ANDROID client)
+        const innertubeData = await fetchInnertubeData(videoId);
 
-        // Step 2: Call innertube player API (ANDROID client)
-        const innertubeData = await fetchInnertubeData(videoId, apiKey);
-
-        // Step 3: Extract caption tracks
+        // Step 2: Extract caption tracks
         const tracks = extractCaptionTracks(innertubeData, videoId);
 
-        // Step 4: Pick the right track
+        // Step 3: Pick the right track
         let chosenTrack;
         if (requestedLang) {
             chosenTrack = tracks.find((t) => t.languageCode === requestedLang);
@@ -232,7 +198,7 @@ app.get('/api/transcript', async (req, res) => {
             chosenTrack = tracks.find((t) => t.kind !== 'asr') || tracks[0];
         }
 
-        // Step 5: Fetch and parse transcript XML
+        // Step 4: Fetch and parse transcript XML
         const xml = await fetchTranscriptXML(chosenTrack.baseUrl);
         const segments = parseTranscriptXML(xml);
 
