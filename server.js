@@ -15,12 +15,23 @@ app.use(express.static(path.join(__dirname, 'public')));
 const USER_AGENT =
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-const INNERTUBE_API_KEY = 'AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w';
-
-const INNERTUBE_API_URL = 'https://www.youtube.com/youtubei/v1/player?key=' + INNERTUBE_API_KEY;
+// Multiple InnerTube API keys (fallback if one is blocked)
+const INNERTUBE_API_KEYS = [
+    'AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w',
+    'AIzaSyAO_FJ2SlqU8Q4ZEHLFAoMEQDcRaGpJzEg',
+];
 
 // Multiple client contexts to try in order (fallback if one gets blocked)
 const CLIENT_CONTEXTS = [
+    {
+        clientName: 'IOS',
+        clientVersion: '19.45.4',
+        deviceMake: 'Apple',
+        deviceModel: 'iPhone',
+        osName: 'IOS',
+        osVersion: '18.1',
+        userAgent: 'com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1 like Mac OS X;)',
+    },
     {
         clientName: 'WEB',
         clientVersion: '2.20260409.00.00',
@@ -29,17 +40,14 @@ const CLIENT_CONTEXTS = [
         clientName: 'ANDROID',
         clientVersion: '20.10.38',
     },
-    {
-        clientName: 'TVHTML5_SIMPLEX',
-        clientVersion: '1.0',
-    },
 ];
 
 // YouTube consent cookie required for some regions
-const CONSENT_COOKIE = 'CONSENT=PENDING+987; SOCS=CAISEwgDEgk2MTkxMjkyNjEaAmVuIAEaBgiA_LyaBg';
+const CONSENT_COOKIE = 'CONSENT=YES+cb.20240101-10-p0.en+FX+700; SOCS=CAISEwgDEgk2MTkxMjkyNjEaAmVuIAEaBgiA_LyaBg';
 
 // Cached visitor data (helps avoid bot detection)
 let cachedVisitorData = null;
+let currentKeyIndex = 0;
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -61,90 +69,106 @@ function extractVideoId(input) {
     return fb ? fb[1] : null;
 }
 
-/** Call innertube player API with fallback client contexts */
+/** Call innertube player API with fallback client contexts and API keys */
 async function fetchInnertubeData(videoId) {
     const errors = [];
 
-    // Try each client context in order
-    for (const context of CLIENT_CONTEXTS) {
-        try {
-            const body = {
-                context: { client: context },
-                videoId: videoId,
-            };
+    // Try each API key and client context combination
+    for (let keyIndex = 0; keyIndex < INNERTUBE_API_KEYS.length; keyIndex++) {
+        const apiKey = INNERTUBE_API_KEYS[(currentKeyIndex + keyIndex) % INNERTUBE_API_KEYS.length];
+        const innertubeApiUrl = 'https://www.youtube.com/youtubei/v1/player?key=' + apiKey;
 
-            // Add visitor data if we have it (helps avoid bot detection)
-            if (cachedVisitorData) {
-                body.serviceIntegrityContext = {
-                    visitorData: cachedVisitorData,
+        for (const context of CLIENT_CONTEXTS) {
+            try {
+                const body = {
+                    context: { client: context },
+                    videoId: videoId,
+                    // Skip content checks (helps avoid bot detection)
+                    contentCheckOk: true,
+                    racyCheckOk: true,
                 };
-            }
 
-            const res = await undiciFetch(INNERTUBE_API_URL, {
-                method: 'POST',
-                headers: {
+                // Add visitor data if we have it (helps avoid bot detection)
+                if (cachedVisitorData) {
+                    body.serviceIntegrityContext = {
+                        visitorData: cachedVisitorData,
+                    };
+                }
+
+                const headers = {
                     'Content-Type': 'application/json',
-                    'User-Agent': USER_AGENT,
+                    'User-Agent': context.userAgent || USER_AGENT,
                     'Cookie': CONSENT_COOKIE,
                     'Accept-Language': 'en-US,en;q=0.9',
-                },
-                body: JSON.stringify(body),
-                signal: AbortSignal.timeout(15000),
-            });
+                    'Origin': 'https://www.youtube.com',
+                    'Referer': 'https://www.youtube.com/',
+                };
 
-            if (!res.ok) {
-                errors.push(`${context.clientName}: HTTP ${res.status}`);
-                continue;
-            }
+                const res = await undiciFetch(innertubeApiUrl, {
+                    method: 'POST',
+                    headers: headers,
+                    body: JSON.stringify(body),
+                    signal: AbortSignal.timeout(15000),
+                });
 
-            const data = await res.json();
-
-            // Cache visitor data for future requests
-            if (data.responseContext?.visitorData) {
-                cachedVisitorData = data.responseContext.visitorData;
-            }
-
-            // Check for bot detection or authentication errors
-            const playabilityStatus = data.playabilityStatus;
-            if (playabilityStatus) {
-                const reason = playabilityStatus.reason || '';
-                const status = playabilityStatus.status;
-
-                // Detect bot detection messages
-                if (reason.toLowerCase().includes('bot') ||
-                    reason.toLowerCase().includes('sign in') ||
-                    reason.toLowerCase().includes('verify') ||
-                    status === 'LOGIN_REQUIRED') {
-                    errors.push(`${context.clientName}: ${reason}`);
+                if (!res.ok) {
+                    errors.push(`${context.clientName} (key${keyIndex}): HTTP ${res.status}`);
                     continue;
                 }
 
-                // Video is actually unavailable (don't try other contexts)
-                if (status === 'ERROR' && !reason.toLowerCase().includes('bot')) {
-                    return data;
-                }
-            }
+                const data = await res.json();
 
-            // Check if captions exist
-            const hasCaptions = data.captions?.playerCaptionsTracklistRenderer?.captionTracks?.length > 0;
-            if (!hasCaptions && errors.length < CLIENT_CONTEXTS.length - 1) {
-                errors.push(`${context.clientName}: No captions found`);
+                // Cache visitor data for future requests
+                if (data.responseContext?.visitorData) {
+                    cachedVisitorData = data.responseContext.visitorData;
+                }
+
+                // Check for bot detection or authentication errors
+                const playabilityStatus = data.playabilityStatus;
+                if (playabilityStatus) {
+                    const reason = playabilityStatus.reason || '';
+                    const status = playabilityStatus.status;
+
+                    // Detect bot detection messages
+                    if (reason.toLowerCase().includes('bot') ||
+                        reason.toLowerCase().includes('sign in') ||
+                        reason.toLowerCase().includes('verify') ||
+                        status === 'LOGIN_REQUIRED') {
+                        errors.push(`${context.clientName} (key${keyIndex}): ${reason.substring(0, 80)}`);
+                        continue;
+                    }
+
+                    // Video is actually unavailable (don't try other contexts)
+                    if (status === 'ERROR' && !reason.toLowerCase().includes('bot')) {
+                        return data;
+                    }
+                }
+
+                // Check if captions exist
+                const hasCaptions = data.captions?.playerCaptionsTracklistRenderer?.captionTracks?.length > 0;
+                const totalContexts = INNERTUBE_API_KEYS.length * CLIENT_CONTEXTS.length;
+                if (!hasCaptions && errors.length < totalContexts - 1) {
+                    errors.push(`${context.clientName} (key${keyIndex}): No captions`);
+                    continue;
+                }
+
+                // Update current key index for next request
+                currentKeyIndex = (currentKeyIndex + keyIndex) % INNERTUBE_API_KEYS.length;
+
+                // Success!
+                return data;
+            } catch (err) {
+                errors.push(`${context.clientName} (key${keyIndex}): ${err.message || 'Unknown error'}`);
                 continue;
             }
-
-            // Success!
-            return data;
-        } catch (err) {
-            errors.push(`${context.clientName}: ${err.message || 'Unknown error'}`);
-            continue;
         }
     }
 
-    // All contexts failed
+    // All combinations failed
     console.error('All client contexts failed:', errors);
     throw {
         code: 'SERVER_ERROR',
-        message: `YouTube rejected all client contexts: ${errors.join('; ')}`,
+        message: `YouTube rejected all requests: ${errors.join('; ')}`,
     };
 }
 
