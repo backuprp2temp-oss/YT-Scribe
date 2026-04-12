@@ -1,0 +1,15 @@
+# Frontend .dockerignore
+node_modules/
+dist/
+build/
+.env
+.env.local
+.env.production
+.git/
+.gitignore
+.vscode/
+.idea/
+*.md
+Dockerfile
+.dockerignore
+nginx.conf

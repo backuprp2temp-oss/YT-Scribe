@@ -1,0 +1,30 @@
+# Backend Dependencies - YT-DLP Web Downloader
+# Install with: pip install -r requirements.txt
+
+# Web Framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+
+# Core Library
+yt-dlp
+
+# Database
+sqlalchemy>=2.0.25
+alembic>=1.13.1
+
+# Background Tasks & Cache
+redis>=5.0.1
+
+# Server-Sent Events
+sse-starlette>=1.6.0
+
+# HTTP Client
+httpx>=0.26.0
+
+# Validation & Config
+pydantic>=2.6.1
+python-dotenv>=1.0.1
+python-multipart>=0.0.6
+
+# Utilities
+aiofiles>=23.2.1
