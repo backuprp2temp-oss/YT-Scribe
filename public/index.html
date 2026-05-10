@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>YT-Scribe — YouTube Video Transcript Downloader</title>
+  <meta name="description" content="Instantly extract and download YouTube video transcripts in TXT, SRT, and JSON formats. Free, fast, and easy to use." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- ── Toast Container ──────────────────────────────── -->
+  <div id="toast-container"></div>
+
+  <!-- ── Loading Overlay ──────────────────────────────── -->
+  <div id="loading-overlay" class="hidden">
+    <div class="spinner-wrap">
+      <div class="spinner"></div>
+      <p class="loading-text">Fetching transcript…</p>
+    </div>
+  </div>
+
+  <!-- ── Main App ─────────────────────────────────────── -->
+  <div class="app">
+
+    <!-- Header -->
+    <header class="header">
+      <div class="logo">
+        <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+        <h1>YT-Scribe</h1>
+      </div>
+      <p class="tagline">Extract &amp; download YouTube transcripts instantly</p>
+    </header>
+
+    <!-- Search Section -->
+    <section class="search-section">
+      <div class="search-box">
+        <div class="input-group">
+          <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          <input
+            type="url"
+            id="url-input"
+            placeholder="Paste YouTube URL here…  e.g. https://youtu.be/dQw4w9WgXcQ"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button id="fetch-btn" title="Get Transcript">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+          </button>
+        </div>
+        <p id="url-error" class="field-error hidden"></p>
+      </div>
+    </section>
+
+    <!-- Results Section (hidden until transcript loads) -->
+    <section id="results-section" class="results-section hidden">
+
+      <!-- Video Meta -->
+      <div class="video-meta" id="video-meta">
+        <img id="video-thumbnail" class="video-thumb" src="" alt="" />
+        <div class="video-info">
+          <h2 id="video-title" class="video-title"></h2>
+          <p id="video-author" class="video-author"></p>
+          <div class="meta-badges">
+            <span id="badge-segments" class="badge"></span>
+            <span id="badge-language" class="badge"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Toolbar -->
+      <div class="toolbar">
+        <div class="toolbar-left">
+          <label for="lang-select" class="sr-only">Language</label>
+          <select id="lang-select" class="lang-select" title="Transcript language">
+            <option value="">Auto-detect</option>
+          </select>
+        </div>
+        <div class="toolbar-right">
+          <button class="tool-btn" id="btn-copy" title="Copy to clipboard">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            <span>Copy</span>
+          </button>
+          <button class="tool-btn" id="btn-txt" title="Download TXT">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+            <span>.txt</span>
+          </button>
+          <button class="tool-btn" id="btn-srt" title="Download SRT">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+            <span>.srt</span>
+          </button>
+          <button class="tool-btn" id="btn-json" title="Download JSON">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+            <span>.json</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Transcript Body -->
+      <div class="transcript-container" id="transcript-container">
+        <!-- segments rendered here by JS -->
+      </div>
+
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <p>Built with ♥ — Paste any YouTube link and get the transcript in seconds.</p>
+    </footer>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
