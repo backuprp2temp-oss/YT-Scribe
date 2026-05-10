@@ -676,4 +676,4 @@ If you encounter any issues or have questions:
 <div align="center">
   <strong>YT-Scribe</strong> — Built with ♥ for the open-source community
 </div>
->>>>>>> 013ddef82c0beb0ef581b402fc21890dbd0d6d25
+
